@@ -1,0 +1,106 @@
+# GoReleaser 配置
+project_name: ota-pay-system
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+    - go test ./...
+
+builds:
+  # 客户端构建
+  - id: ota-client
+    main: ./cmd/client
+    binary: ota
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - riscv64
+      - mips
+      - mipsle
+      - mips64
+      - mips64le
+    goarm:
+      - 7
+    gomips:
+      - softfloat
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+      - -X main.GitCommit={{.FullCommit}}
+    hooks:
+      post:
+        - sh -c 'if [ "{{ .Os }}" = "linux" ]; then upx --best --lzma {{ .Path }}; fi'
+        
+  # 服务器构建
+  - id: ota-server
+    main: ./cmd/server
+    binary: ota-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+      - -X main.GitCommit={{.FullCommit}}
+
+archives:
+  - id: default
+    builds:
+      - ota-client
+      - ota-server
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}{{ if .Mips }}_{{ .Mips }}{{ end }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - configs/*
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: "yourusername"
+    name: "ota-pay-system"
+  prerelease: auto
+  name_template: "OTA Pay System v{{.Version}}"
+
+blobs:
+  - provider: s3
+    bucket: "ota-releases"
+    region: "us-east-1"
+    folder: "{{ .ProjectName }}/{{ .Version }}"
+    ids:
+      - ota-client
+      - ota-server
