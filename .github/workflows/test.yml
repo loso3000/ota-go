@@ -1,34 +1,335 @@
-name: test
+name: OTA Build and Test
 
 on:
   push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 手动触发
 
+env:
+  GO_VERSION: '1.21'  # 使用 Go 1.21
+  PROJECT_NAME: 'ota-pay-system'
+  
 jobs:
-  test:
+  # 代码质量和测试
+  quality:
+    name: Quality Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取所有历史用于版本计算
+          
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          
+      - name: Verify dependencies
+        run: |
+          go mod download
+          go mod verify
+          
+      - name: Run linters
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: v1.55
+          args: --timeout=5m
+          
+      - name: Run tests
+        run: |
+          make test
+          
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: coverage.out
+          
+  # 构建所有架构
+  build:
+    name: Build All Architectures
+    needs: quality
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goarch: [amd64, arm64, riscv64]
+        include:
+          - os: linux
+            arch: amd64
+            output: ota-linux-amd64
+          - os: linux
+            arch: arm64
+            output: ota-linux-arm64
+          - os: linux
+            arch: arm
+            arm: 7
+            output: ota-linux-armv7
+          - os: linux
+            arch: riscv64
+            output: ota-linux-riscv64
+          - os: linux
+            arch: mips
+            mips: softfloat
+            output: ota-linux-mips
+          - os: linux
+            arch: mipsle
+            mips: softfloat
+            output: ota-linux-mipsel
+          - os: darwin
+            arch: amd64
+            output: ota-darwin-amd64
+          - os: darwin
+            arch: arm64
+            output: ota-darwin-arm64
+          - os: windows
+            arch: amd64
+            output: ota-windows-amd64.exe
+          - os: windows
+            arch: arm64
+            output: ota-windows-arm64.exe
+            
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v4
         with:
-          go-version-file: 'go.mod'
-
-      - name: Test
+          go-version: ${{ env.GO_VERSION }}
+          
+      - name: Set version info
+        id: version
         run: |
-          # Run tests only when GOARCH is amd64, otherwize run builds only.
-          if [ "${{ matrix.goarch }}" = "amd64" ]; then
-            make build test
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
           else
-            GOARCH=${{ matrix.goarch }} make build
+            VERSION="dev-${GITHUB_SHA:0:8}"
           fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Build binary
+        run: |
+          # 设置构建参数
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+          {{ matrix.arm && format('GOARM={0}', matrix.arm) || '' }} \
+          {{ matrix.mips && format('GOMIPS={0}', matrix.mips) || '' }} \
+          
+          # 版本信息
+          VERSION="${{ env.VERSION }}"
+          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
+          GIT_COMMIT="${{ github.sha }}"
+          
+          # LDFlags
+          LDFLAGS="-s -w -X 'main.Version=${VERSION}' \
+                   -X 'main.BuildTime=${BUILD_TIME}' \
+                   -X 'main.GitCommit=${GIT_COMMIT}'"
+          
+          # 构建客户端
+          echo "Building ${{ matrix.output }}..."
+          go build -trimpath -ldflags "${LDFLAGS}" \
+            -o "${{ matrix.output }}" ./cmd/client
+            
+          # 构建服务器（仅Linux）
+          if [[ "${{ matrix.os }}" == "linux" ]]; then
+            SERVER_OUTPUT="ota-server-${{ matrix.os }}-${{ matrix.arch }}"
+            go build -trimpath -ldflags "${LDFLAGS}" \
+              -o "${SERVER_OUTPUT}" ./cmd/server
+          fi
+          
+      - name: Compress with UPX (Linux only)
+        if: matrix.os == 'linux'
+        run: |
+          apt-get update && apt-get install -y upx
+          upx --best --lzma "${{ matrix.output }}" || true
+          
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v3
         with:
-          name: ddns-go_${{ matrix.goarch }}
-          path: ddns-go
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+          
+  # OpenWrt 专用构建
+  build-openwrt:
+    name: Build for OpenWrt
+    needs: quality
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          
+      - name: Set version info
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-${GITHUB_SHA:0:8}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
+      - name: Install UPX
+        run: |
+          apt-get update && apt-get install -y upx
+          
+      - name: Build OpenWrt binaries
+        run: |
+          mkdir -p dist/openwrt
+          
+          # OpenWrt 支持的架构
+          ARCHITECTURES=(
+            "x86_64:amd64"
+            "armv7:arm:7"
+            "aarch64:arm64"
+            "mips:mips:softfloat"
+            "mipsel:mipsle:softfloat"
+            "mips64:mips64:softfloat"
+            "mips64el:mips64le:softfloat"
+          )
+          
+          for arch_info in "${ARCHITECTURES[@]}"; do
+            IFS=':' read -r name arch_flag mips_flag <<< "$arch_info"
+            
+            echo "Building for $name..."
+            
+            # 设置环境变量
+            export GOOS=linux
+            export GOARCH="$arch_flag"
+            
+            if [[ -n "$mips_flag" ]]; then
+              if [[ "$mips_flag" == *[0-9]* ]]; then
+                export GOARM="$mips_flag"
+              else
+                export GOMIPS="$mips_flag"
+              fi
+            fi
+            
+            # 构建参数
+            LDFLAGS="-s -w \
+              -X 'main.Version=${{ env.VERSION }}' \
+              -X 'main.BuildTime=$(date -u '+%Y-%m-%d_%H:%M:%S')' \
+              -X 'main.GitCommit=${{ github.sha }}'"
+            
+            # 构建客户端
+            OUTPUT="dist/openwrt/ota-$name"
+            go build -trimpath -ldflags "${LDFLAGS}" \
+              -o "$OUTPUT" ./cmd/client
+              
+            # 压缩
+            upx --best --lzma "$OUTPUT" 2>/dev/null || true
+            
+            # 验证
+            if [ -f "$OUTPUT" ]; then
+              echo "✓ Built: $OUTPUT"
+              file "$OUTPUT"
+            else
+              echo "✗ Failed: $OUTPUT"
+            fi
+          done
+          
+      - name: Upload OpenWrt artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ota-openwrt-binaries
+          path: dist/openwrt/
+          
+  # 使用 GoReleaser 发布
+  release:
+    name: Create Release
+    needs: [quality, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v4
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload release assets
+        run: |
+          echo "Release assets are uploaded by GoReleaser"
+          
+  # 容器镜像构建
+  docker:
+    name: Build Docker Images
+    needs: quality
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Login to DockerHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/ota-server
+            ${{ secrets.DOCKER_USERNAME }}/ota-client
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            
+      - name: Build and push server image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.server
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          
+      - name: Build and push client image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.client
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ secrets.DOCKER_USERNAME }}/ota-client:${{ steps.meta.outputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
