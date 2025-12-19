@@ -1,0 +1,140 @@
+# GoReleaser configuration for OTA Pay System
+project_name: ota-pay-system
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+    
+builds:
+  # 客户端构建
+  - id: ota-client
+    main: ./cmd/client
+    binary: ota
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - riscv64
+      - mips
+      - mipsle
+      - mips64
+      - mips64le
+    goarm:
+      - 7
+    gomips:
+      - softfloat
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+      - -X main.GitCommit={{.FullCommit}}
+    hooks:
+      post:
+        - sh -c 'if [ "{{ .Os }}" = "linux" ]; then upx --best --lzma {{ .Path }}; fi'
+        
+  # 服务器构建
+  - id: ota-server
+    main: ./cmd/server
+    binary: ota-server
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+      - -X main.GitCommit={{.FullCommit}}
+      
+archives:
+  - id: ota-client
+    builds:
+      - ota-client
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}{{ if .Mips }}_{{ .Mips }}{{ end }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - config.example.yaml
+      
+  - id: ota-server
+    builds:
+      - ota-server
+    name_template: "{{ .ProjectName }}-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - config.example.yaml
+      - docker-compose.yml
+      
+checksum:
+  name_template: "checksums.txt"
+  
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+  
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      
+release:
+  github:
+    owner: yourusername
+    name: ota-pay-system
+  prerelease: auto
+  name_template: "OTA Pay System v{{.Version}}"
+  
+dockers:
+  - image_templates:
+      - "yourusername/ota-server:{{ .Version }}"
+      - "yourusername/ota-server:latest"
+    use: buildx
+    dockerfile: Dockerfile.server
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--platform=linux/arm64"
+      - "--platform=linux/arm/v7"
+    extra_files:
+      - config.example.yaml
+      - docker-compose.yml
+      
+nfpms:
+  - id: ota-client
+    builds:
+      - ota-client
+    package_name: ota-client
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}"
+    vendor: "OTA Pay System"
+    homepage: "https://github.com/yourusername/ota-pay-system"
+    maintainer: "Your Name <you@example.com>"
+    description: "OTA Pay System Client"
+    license: "MIT"
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    contents:
+      - src: config.example.yaml
+        dst: /etc/ota/ota.yaml.example
+      - src: LICENSE
+        dst: /usr/share/doc/ota-client/LICENSE
