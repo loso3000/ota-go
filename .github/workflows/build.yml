@@ -1,259 +1,66 @@
-name: Build and Test
+name: Build OTA for OpenWrt
 
 on:
   push:
     branches: [ main, master ]
     tags: [ 'v*' ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
 
-env:
-  GO_VERSION: '1.21'
-  PROJECT_NAME: 'ota-pay-system'
-  
 jobs:
-  # 代码质量检查
-  quality:
-    name: Quality Check
+  build-openwrt:
     runs-on: ubuntu-latest
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-          
-      - name: Verify dependencies
-        run: |
-          go mod download
-          go mod verify
-          
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v3
-        with:
-          version: v1.55
-          args: --timeout=5m
-          
-      - name: Run tests
-        run: |
-          go test ./... -v -race -coverprofile=coverage.out
-          
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
-        with:
-          files: coverage.out
-          
-  # 构建所有架构
-  build:
-    name: Build All Architectures
-    needs: quality
-    runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-        exclude:
-          - goos: windows
-            goarch: arm64
-          - goos: darwin
-            goarch: arm64
-        include:
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: linux
-            goarch: mips
-            gomips: softfloat
-          - goos: linux
-            goarch: mipsle
-            gomips: softfloat
-          - goos: linux
-            goarch: riscv64
-            
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          
-      - name: Set version info
-        id: version
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION="dev-${GITHUB_SHA:0:8}"
-          fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          
-      - name: Build binary
-        run: |
-          # 设置环境变量
-          export GOOS=${{ matrix.goos }}
-          export GOARCH=${{ matrix.goarch }}
-          export CGO_ENABLED=0
-          
-          # 设置 ARM 版本
-          {{ matrix.goarm && format('export GOARM={0}', matrix.goarm) || 'echo "No GOARM"' }}
-          
-          # 设置 MIPS 版本
-          {{ matrix.gomips && format('export GOMIPS={0}', matrix.gomips) || 'echo "No GOMIPS"' }}
-          
-          # 构建参数
-          VERSION="${{ env.VERSION }}"
-          BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
-          GIT_COMMIT="${{ github.sha }}"
-          
-          LDFLAGS="-s -w \
-            -X 'main.Version=${VERSION}' \
-            -X 'main.BuildTime=${BUILD_TIME}' \
-            -X 'main.GitCommit=${GIT_COMMIT}'"
-          
-          # 构建客户端
-          echo "Building client for ${GOOS}/${GOARCH}..."
-          go build -trimpath -ldflags "${LDFLAGS}" \
-            -o "ota-${{ matrix.goos }}-${{ matrix.goarch }}{{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}" \
-            ./cmd/client
-            
-          # 构建服务器（仅Linux和Darwin）
-          if [[ "$GOOS" == "linux" || "$GOOS" == "darwin" ]]; then
-            echo "Building server for ${GOOS}/${GOARCH}..."
-            go build -trimpath -ldflags "${LDFLAGS}" \
-              -o "ota-server-${{ matrix.goos }}-${{ matrix.goarch }}{{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}" \
-              ./cmd/server
-          fi
-          
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: ota-${{ matrix.goos }}-${{ matrix.goarch }}{{ matrix.goarm && format('-v', matrix.goarm) || '' }}
-          path: |
-            ota-${{ matrix.goos }}-${{ matrix.goarch }}{{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}
-            ota-server-${{ matrix.goos }}-${{ matrix.goarch }}{{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}
-            
-  # OpenWrt 专用构建
-  build-openwrt:
-    name: Build for OpenWrt
-    needs: quality
-    runs-on: ubuntu-latest
+        arch: [x86_64, aarch64, armv7, mips, mipsel]
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Build
+      run: |
+        # 设置架构参数
+        case ${{ matrix.arch }} in
+          x86_64)
+            GOARCH=amd64
+            ;;
+          aarch64)
+            GOARCH=arm64
+            ;;
+          armv7)
+            GOARCH=arm
+            GOARM=7
+            ;;
+          mips)
+            GOARCH=mips
+            GOMIPS=softfloat
+            ;;
+          mipsel)
+            GOARCH=mipsle
+            GOMIPS=softfloat
+            ;;
+        esac
         
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          
-      - name: Set version info
-        id: version
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION="dev-${GITHUB_SHA:0:8}"
-          fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          
-      - name: Install UPX
-        run: |
-          sudo apt-get update && sudo apt-get install -y upx
-          
-      - name: Build OpenWrt binaries
-        run: |
-          mkdir -p dist/openwrt
-          
-          # OpenWrt 架构列表
-          declare -A OPENWRT_ARCHS=(
-            ["x86_64"]="GOARCH=amd64"
-            ["aarch64"]="GOARCH=arm64"
-            ["armv7"]="GOARCH=arm GOARM=7"
-            ["mips"]="GOARCH=mips GOMIPS=softfloat"
-            ["mipsel"]="GOARCH=mipsle GOMIPS=softfloat"
-            ["mips64"]="GOARCH=mips64 GOMIPS=softfloat"
-            ["mips64el"]="GOARCH=mips64le GOMIPS=softfloat"
-          )
-          
-          for arch in "${!OPENWRT_ARCHS[@]}"; do
-            echo "Building for $arch..."
-            
-            # 设置环境变量
-            export GOOS=linux
-            eval "${OPENWRT_ARCHS[$arch]}"
-            export CGO_ENABLED=0
-            
-            # 构建参数
-            VERSION="${{ env.VERSION }}"
-            BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S')
-            GIT_COMMIT="${{ github.sha }}"
-            
-            LDFLAGS="-s -w \
-              -X 'main.Version=${VERSION}' \
-              -X 'main.BuildTime=${BUILD_TIME}' \
-              -X 'main.GitCommit=${GIT_COMMIT}'"
-            
-            # 构建客户端
-            OUTPUT="dist/openwrt/ota-${arch}"
-            go build -trimpath -ldflags "${LDFLAGS}" \
-              -o "${OUTPUT}" ./cmd/client
-              
-            # 压缩二进制文件
-            upx --best --lzma "${OUTPUT}" 2>/dev/null || true
-            
-            # 验证构建
-            if [ -f "${OUTPUT}" ]; then
-              echo "✓ Built: ${OUTPUT}"
-              file "${OUTPUT}"
-            else
-              echo "✗ Failed: ${OUTPUT}"
-            fi
-          done
-          
-      - name: Upload OpenWrt artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: ota-openwrt-binaries
-          path: dist/openwrt/
-          
-  # 发布版本
-  release:
-    name: Create Release
-    needs: [quality, build, build-openwrt]
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v4
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Upload release assets
-        run: |
-          echo "Release assets are uploaded by GoReleaser"
+        GOOS=linux
+        CGO_ENABLED=0
+        
+        # 构建版本信息
+        VERSION="$(date +%Y%m%d)"
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        
+        # 构建
+        go build -ldflags="-s -w -X 'main.Version=$VERSION'" \
+          -o ota-${{ matrix.arch }} .
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ota-${{ matrix.arch }}
+        path: ota-${{ matrix.arch }}
