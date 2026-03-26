@@ -1,4 +1,4 @@
-name: Build run file
+name: Build run passwall file
 
 on:
   repository_dispatch:
