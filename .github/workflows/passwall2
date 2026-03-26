@@ -1,0 +1,39 @@
+name: Build run passwall2 file
+
+on:
+  repository_dispatch:
+  push:
+    branches: [ main]
+  workflow_dispatch:
+
+jobs:
+  build-openwrt:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+        
+    - name: Build run files
+      uses: sirpdboy/buildrun@passwall 
+      with:
+        OUTPUT_DIR: "./passwall2"
+      
+    - name: Set tag name
+      run: |
+          TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
+          echo "tag_name=$TODAY" >> $GITHUB_ENV
+          
+    - name: Upload run files as release assets
+      uses: softprops/action-gh-release@v2.1.0
+      with:
+          tag_name: ${{ env.tag_name }}
+          name: "Build - ${{ env.tag_name }}"
+          files: ./passwall2/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+          env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
