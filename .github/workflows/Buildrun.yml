@@ -14,12 +14,28 @@ jobs:
       
     steps:
     - uses: actions/checkout@v4
+
+      
+    - name: Build run files
+      uses: sirpdboy/buildrun@passwall
+      with:
+        OUTPUT_DIR: "./pkgrun"
+      
+    - name: Build run files
+      uses: sirpdboy/buildrun@passwall2
+      with:
+        OUTPUT_DIR: "./pkgrun"
       
     - name: Build run files
       uses: sirpdboy/buildrun@openclash
       with:
         OUTPUT_DIR: "./pkgrun"
-        
+      
+    - name: Build run files
+      uses: sirpdboy/buildrun@nikki
+      with:
+        OUTPUT_DIR: "./pkgrun"
+
     - name: Set tag name
       run: |
           TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
