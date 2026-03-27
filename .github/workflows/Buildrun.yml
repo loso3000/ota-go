@@ -1,4 +1,4 @@
-name: Build run openclash file
+name: Build run file
 
 on:
   repository_dispatch:
