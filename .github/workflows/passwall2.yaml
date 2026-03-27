@@ -19,7 +19,7 @@ jobs:
         go-version: '1.21'
         
     - name: Build run files
-      uses: sirpdboy/buildrun@passwall 
+      uses: sirpdboy/buildrun@passwall2
       with:
         OUTPUT_DIR: "./passwall2"
       
