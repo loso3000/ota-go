@@ -9,7 +9,9 @@ on:
 jobs:
   build-openwrt:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write
+      
     steps:
     - uses: actions/checkout@v4
     
@@ -27,7 +29,8 @@ jobs:
       run: |
           TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
           echo "tag_name=$TODAY" >> $GITHUB_ENV
-          
+
+      
     - name: Upload run files as release assets
       uses: softprops/action-gh-release@v2.1.0
       with:
@@ -35,5 +38,6 @@ jobs:
           name: "Build - ${{ env.tag_name }}"
           files: ./passwall2/*.run
           token: ${{ secrets.GITHUB_TOKEN }}
-          env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          
