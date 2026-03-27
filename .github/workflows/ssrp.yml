@@ -1,0 +1,38 @@
+name: Build run ssrp file
+
+on:
+  repository_dispatch:
+  push:
+    branches: [ main]
+  workflow_dispatch:
+
+jobs:
+  build-openwrt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - uses: actions/checkout@v4
+        
+    - name: Build run files
+      uses: sirpdboy/buildrun@ssrp
+      with:
+        OUTPUT_DIR: "./ssrp"
+      
+    - name: Set tag name
+      run: |
+          TODAY=$(date -u -d '+8 hour' +'%Y-%m-%d')
+          echo "tag_name=$TODAY" >> $GITHUB_ENV
+
+      
+    - name: Upload run files as release assets
+      uses: softprops/action-gh-release@v2.1.0
+      with:
+          tag_name: ${{ env.tag_name }}
+          name: "Build - ${{ env.tag_name }}"
+          files: ./ssrp/*.run
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          
